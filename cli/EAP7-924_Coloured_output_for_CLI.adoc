@@ -1,6 +1,6 @@
 ---
 categories:
-  - cli
+  - foo
   - user-experience
 ---
 = Coloured output for CLI
