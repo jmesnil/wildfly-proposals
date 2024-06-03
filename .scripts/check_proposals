@@ -65,6 +65,9 @@ metadata_checker = MetadataChecker.new
 
 check_succeeds = true
 
+pr_number = ARGV[0]
+ARGV.shift
+
 # Read and print the content of each file passed as arguments
 ARGV.each do |file|
   begin
