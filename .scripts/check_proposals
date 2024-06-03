@@ -27,17 +27,20 @@ class MetadataChecker
     @categories = load_all_categories()
   end
 
-  def check front_matter
+  def check pr_number, front_matter
     puts "Check front matter #{front_matter}"
     errors = []
-    categories_errors = check_categories(front_matter)
+    categories_errors = check_categories(pr_number, front_matter)
     if categories_errors.length() > 0
       errors << categories_errors
+      system("gh pr edit #{pr_number} --add-label invalid-categories")
+    else 
+      system("gh pr edit #{pr_number} --remove-label invalid-categories")
     end
     errors
   end
 
-  def check_categories front_matter
+  def check pr_number, front_matter
     errors = []
     unless (front_matter.key? "categories") && (front_matter["categories"] != nil) && (front_matter["categories"].length() > 0)
       errors << "Missing field: categories"

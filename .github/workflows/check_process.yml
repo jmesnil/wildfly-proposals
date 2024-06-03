@@ -1,7 +1,7 @@
 name: Check Proposals in pull requests
 
 on:
-  pull_request:
+  pull_request_target:
 
 jobs:
   check-proposal:
@@ -10,6 +10,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: "refs/pull/${{ github.event.number }}/merge"
       - name: Setup Ruby
         uses: ruby/setup-ruby@8575951200e472d5f2d95c625da0c7bec8217c42 # v1.161.0
         with:
@@ -29,7 +31,9 @@ jobs:
       - name: Check files that have changed
         if: steps.changed-proposals.outputs.any_changed == 'true'  
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROPOSAL_FILES: ${{ steps.changed-proposals.outputs.all_changed_files }}
+          PR_NUMBER: ${{ github.event.number }}
         run: |
           echo "Check all proposals files that have changed: $PROPOSAL_FILES"
-          ./.scripts/check_proposals $PROPOSAL_FILES
+          ./.scripts/check_proposals $PR_NUMBER $PROPOSAL_FILES
