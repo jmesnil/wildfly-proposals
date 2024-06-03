@@ -2,7 +2,6 @@
 categories:
 # Add any category for this proposal as a yaml list, e.g.
 # - core
-# - management
 # if missing, add it to _data/widfly-categories and use its id
 ---
 = WildFly bootable JAR

@@ -2,6 +2,7 @@
 categories:
   - bootable-jar
   - foo
+  - bar
 ---
 = Ability to execute CLI script at runtime
 :author:           Jean-Francois Denise
