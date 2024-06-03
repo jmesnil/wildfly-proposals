@@ -1,7 +1,8 @@
 name: Check Proposals in pull requests
 
 on:
-- pull_request_target
+  pull_request_target:
+    types: [assigned, opened, synchronize, reopened]
 
 jobs:
   check-proposal:
