@@ -1,6 +1,8 @@
 ---
 categories:
   - core
+issue: https://issues.redhat.com/browse/EAP7-1385
+stability-level: experimental
 ---
 = Dummmy feature
 :author:            Jean-Francois Denise
