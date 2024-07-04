@@ -56,7 +56,7 @@ class MetadataChecker
       system("gh pr edit #{pr_number} --add-label invalid-stability-level")
       @stability_levels.map { | level | system("gh pr edit #{pr_number} --remove-label stability-level/#{level}") }
     end
-
+    
     errors
   end
 
