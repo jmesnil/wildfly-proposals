@@ -2,7 +2,7 @@
 categories:
   - bootable-jar
 issue: https://issues.redhat.com/browse/WFLY-13305
-stability-level: experimental
+stability-level: experimentassl
 ---
 = WildFly bootable JAR
 :author:            Jean-Francois Denise
