@@ -1,0 +1,178 @@
+---
+# Add any category for this proposal as a yaml list, e.g.
+# - core
+# - management
+# if missing, add it to _data/wildfly-categories and use its id
+categories:
+- MicroProfile
+# Specify the stability level of the feature.
+# Values can be one of: experimental preview community default
+stability-level:
+- default
+# Specify the Feature Development tracker issue for the feature.
+# This must be an issue tracked in https://github.com/orgs/wildfly/projects/7/views/1.
+# To create a Feature Development tracker issue, go to  https://github.com/wildfly/wildfly-proposals/issues/new/choose
+# and select 'Feature Development'
+issue:
+# Provide the github ids of the members of the feature team, organized by role.
+# Provide a single id for the 'assignee' role. Use a yaml list for the 'sme' and
+# 'outside-perspective' roles, even if there is only one person in a role.
+feature-team:
+ developer: kabir
+ sme:
+  -
+ outside-perspective:
+  -
+# If this issue tracks the promotion to a higher stability level of a previously
+# completed feature, provide the URL of the https://github.com/wildfly/wildfly-proposals/issues
+# issue that was used to track the previous feature.
+promotes:
+# This should be blank during initial development of a feature. It may be used
+# after the feature is completed if a subsequent issue is field to track promotion
+# of this feature to a higher stability level
+promoted-by:
+---
+
+= WFLY-19762 - Define and document our support for MicroProfile with multiple deployments
+:author:            Kabir Khan
+:email:             kkhan@redhat.com
+:toc:               left
+:icons:             font
+:idprefix:
+:idseparator:       -
+
+== Overview
+
+We need to verify that we can have several .war deployments using the various MicroProfile components side-by-side. This is needed e.g. to ensure that they don't interfere with each other. Other deployment types are out of scope.
+
+In most cases this should be relatively straight-forward, with just some tests needed to show that it works in this scenario, possibly with some minor fixes to the components implementing the MicroProfile specification, or the WildFly server integration code.
+
+For these straight-forward cases, we will populate the following sections:
+
+* link:#affected-projects-or-components[Affected Components] - if changes are needed to the code of one of the components, that component will be mentioned here.
+* link:#requirements[Requirements] - components listed here are covered by this RFE, along with a brief description of the expected behavious. if there are some corner cases, or something working  differently from how this would be naively interpreted, these will be mentioned here for the affected components. This may also include the link:#non-requirements[Non-Requirements] sub-section.
+* link:#related-issues[Related Issues] - for each MicroProfile specification included in *this* umbrella RFE, the issue tracking the work is listed here. Typically, these are issues with an 'incorporates' link from https://issues.redhat.com/browse/WFLY-19792. If any separate RFEs are needed those will be listed here.
+* link:#affected-projects-or-components[Affected Components] - if changes are needed in other components, the changes are summarised here.
+* link:#implementation-plan[Implementation Plan] - if changes are needed in other components, and they are non-trivial, the changes are summarised here.
+* link:#test_plan[Test Plan] - outlines the tests to be added to the WildFly testsuite to ensure that side-by-side deployment is tested for each component
+
+MicroProfile specifications implementations needing more extensive work, will have their own RFEs.
+
+
+
+
+=== User Stories
+
+As an example the user may want to deploy two applications using MicroProfile Config. Each application should only see their own config, and config specified at a 'higher' level such as via environment variables and system properties. For this case, each application should behave as if it is the only application deployed on the server.
+
+== Issue Metadata
+
+https://issues.redhat.com/browse/WFLY-19792[WFLY-19792 - Define and document our support for MicroProfile with multiple deployments]
+
+=== Related Issues
+
+MicroProfile Specification issues:
+
+* https://issues.redhat.com/browse/WFLY-19761[WFLY-19761 - Test MP Config in multiple deployments]
+* https://issues.redhat.com/browse/WFLY-19759[WFLY-19759 - Add a test testing more than one reactive messaging deployment in parallel] - this was done a while ago
+** https://issues.redhat.com/browse/WFLY-20605[WFLY-20605 - Update MicroProfile Reactive Messaging documentation to clarify only .war deployments supported]
+
+=== Affected Projects or Components
+
+//__<List the projects or components that are affected by the feature. List them using their Git repositories.>__
+
+=== Other Interested Projects
+
+=== Relevant Installation Types
+
+__<List the installation types that are relevant for the features and remove any that are not relevant>__.
+
+* Traditional standalone server (unzipped or provisioned by Galleon)
+* Managed domain
+* OpenShift Source-to-Image (S2I)
+* Bootable jar
+
+== Requirements
+
+It should be possible to deploy several .war applications using the same MicroProfile specification, and they should generally behave as if they were deployed on their own. i.e. a deployment should not be polluted by another deployment.
+
+The current scope is .war deployments. Other deployment types are not covered by this RFE.
+
+Component notes:
+
+* Microprofile Config
+** Each deployment will have access to config properties defined outside of the deployment (e.g. env vars, system properties, and properties set in the MicroProfile Config subsystem).
+** Further each deployment may define its own config properties via a `META-INF/microprofile-config.properties`, or custom `ConfigSource` and `ConfigSourceProvider` implementations. These own config properties are local to the deployment, and must only be visible from within this deployment. So if we have A.war and B.war, A.war should not see properties local to B.war and vice versa. Of course, A.war and B.war should have access to their own properties.
+* MicroProfile Reactive Messaging - This already has tests for multiple .war deployment, done as part of https://issues.redhat.com/browse/WFLY-19759[WFLY-19759] a while ago.
+
+=== Non-Requirements
+
+There is no need to support MicroProfile components in .ear files, or any archives apart from .war files.
+
+Other deployment types *might* work in practice, but .wars are the only documented use case for now.
+
+=== Future Work
+
+If the MicroProfile specifications start supporting other deployment types, we will too.
+
+We might also consider supporting other deployment types for some MicroProfile specifications in the future as a WildFly-specific improvement. These could come in at one of the lower stability levels.
+
+== Backwards Compatibility
+
+There aren't really any backwards compatibility issues. This is mainly about testing, and fixing anything that may crop up during testing.
+
+Saying that, one possible backwards compatibility issue is that users may have been using MicroProfile functionality in other deployment types than .war. We are not changing anything to ban this, but are specifying that the scope is now just .war files. So users using other deployment types will be able to continue to do so, but, as is the case currently, at their own risk.
+
+=== Default Configuration
+
+There is no change to the default values of configuration attributes, nor any changes to the configuration generated by any current Galleon layers.
+
+=== Importing Existing Configuration
+
+There are no changes to the server configuration.
+
+=== Deployments
+
+There are no incompatible changes to the behaviour deployments.
+
+=== Interoperability
+
+This does not affect interoperability.
+
+== Implementation Plan
+
+// __<This section is optional. If you have a complex feature which can not be delivered all in one go, suggest the strategy.>__
+
+== Admin Clients
+
+No admin client issues.
+// __<Identify the level of compatibility this feature will have with the existing admin clients (JBoss CLI and the Admin Console / HAL). Identify any follow up work that will be required in the clients and link issues created to track this work.>__
+
+== Security Considerations
+
+// __<What impact on security does this feature have?>__
+There is no impact on security.
+
+[[test_plan]]
+== Test Plan
+Tests will be added to the `testsuite/integration/expansion` testsuite in WildFly to test multiple .war deployments for the following MicroProfile components as part of this RFE.
+
+* MicroProfile Config
+** A test will be created with two .war deployments. It will demonstrate that properties coming from outside the deployment are usable by both deployments, and that properties defined within each deployment are local to that deployment.
+* MicroProfile Reactive Messaging
+** The existing test deploys two similar applications. In one of them MicroProfile Config properties are used to map the Reactive Messaging channels to AMQP, and in the other the MicroProfile Config properties are used to map the channels to Kafka. A lot of the properties share their names, and the test checks that deployment A sends and receives data to/from AMQP, and that deployment B does the same with Kafka.
+
+
+== Community Documentation
+
+// __<Describe how this feature will be documented or illustrated. Generally a feature should have documentation as part of the PR to wildfly main, or as a follow up PR if the feature is in wildfly-core. In some cases though the feature will bring additional content (such as quickstarts, guides, etc.). Indicate which of these will happen>__
+
+The community documentation will be updated as follows:
+
+* MicroProfile Config - it will point out that only .war deployments are supported, and that although it might work in other deployment types, the behaviour is undefined.
+* MicroProfile Reactive Messaging - it will point out that only .war deployments are supported, and that although it might work in other deployment types, the behaviour is undefined.
+
+
+== Release Note Content
+
+There are improvements to the integration of the MicroProfile specifications to ensure that multiple side-by-side .war deployments work as expected.
