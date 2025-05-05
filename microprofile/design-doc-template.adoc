@@ -1,12 +1,6 @@
 ---
-# Add any category for this proposal as a yaml list, e.g.
-# - core
-# - management
-# if missing, add it to _data/wildfly-categories and use its id
 categories:
-- MicroProfile
-# Specify the stability level of the feature.
-# Values can be one of: experimental preview community default
+- microprofile
 stability-level:
 - default
 # Specify the Feature Development tracker issue for the feature.
@@ -14,25 +8,15 @@ stability-level:
 # To create a Feature Development tracker issue, go to  https://github.com/wildfly/wildfly-proposals/issues/new/choose
 # and select 'Feature Development'
 issue:
-# Provide the github ids of the members of the feature team, organized by role.
-# Provide a single id for the 'assignee' role. Use a yaml list for the 'sme' and
-# 'outside-perspective' roles, even if there is only one person in a role.
 feature-team:
  developer: kabir
  sme:
-  -
+  - jmesnil
  outside-perspective:
   -
-# If this issue tracks the promotion to a higher stability level of a previously
-# completed feature, provide the URL of the https://github.com/wildfly/wildfly-proposals/issues
-# issue that was used to track the previous feature.
 promotes:
-# This should be blank during initial development of a feature. It may be used
-# after the feature is completed if a subsequent issue is field to track promotion
-# of this feature to a higher stability level
 promoted-by:
 ---
-
 = WFLY-19762 - Define and document our support for MicroProfile with multiple deployments
 :author:            Kabir Khan
 :email:             kkhan@redhat.com
@@ -104,6 +88,9 @@ Component notes:
 ** Each deployment will have access to config properties defined outside of the deployment (e.g. env vars, system properties, and properties set in the MicroProfile Config subsystem).
 ** Further each deployment may define its own config properties via a `META-INF/microprofile-config.properties`, or custom `ConfigSource` and `ConfigSourceProvider` implementations. These own config properties are local to the deployment, and must only be visible from within this deployment. So if we have A.war and B.war, A.war should not see properties local to B.war and vice versa. Of course, A.war and B.war should have access to their own properties.
 * MicroProfile Reactive Messaging - This already has tests for multiple .war deployment, done as part of https://issues.redhat.com/browse/WFLY-19759[WFLY-19759] a while ago.
+* MicroProfile Health - This already has tests for multiple .war deployment.
+** Each .war contributes its healthiness checks to the global server healthiness.
+** When multiple .war archives are deployed, if at least *one* defines the `mp.health.disable-default-procedures` config to `true`, it affects the whole server configuration (as described in https://docs.wildfly.org/36/Admin_Guide.html#disabling-default-server-procedure[("Disabling Default Server Procedures" documentation)]). This multi-deployment behaviour is not specified in the MicroProfile Health specification.
 
 === Non-Requirements
 
