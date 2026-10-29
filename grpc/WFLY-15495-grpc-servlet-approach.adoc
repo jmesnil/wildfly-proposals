@@ -1,7 +1,7 @@
 ---
 categories:
   - grpc
-stability-level: experimental
+stability-level: preview
 issue: https://issues.redhat.com/browse/WFLY-15495
 feature-team:
  developer: jmesnil
@@ -31,8 +31,7 @@ subsystem.
 This proposal replaces the Netty server with a Servlet-based implementation using `io.grpc:grpc-servlet-jakarta`
 (upstream Experimental API). gRPC traffic is served over the existing Undertow HTTP/2 listeners on the standard WildFly
 ports (`:8080` / `:8443`), and port `:9555` is retired. The extension remains in
-`wildfly-extras/wildfly-grpc-feature-pack`. Feasibility was confirmed by a proof-of-concept at
-https://github.com/jmesnil/wildfly-grpc-feature-pack/tree/worktree-servlet_implementation.
+`wildfly-extras/wildfly-grpc-feature-pack`.
 
 === User Stories
 
@@ -41,6 +40,8 @@ https://github.com/jmesnil/wildfly-grpc-feature-pack/tree/worktree-servlet_imple
 certificates for all HTTP-based traffic.
 3. As an Application Developer, I want to inject CDI beans into gRPC services and interceptors without changing my
 `.proto` files or service logic.
+4. As an Application Developer, I want to use `@RolesAllowed` on CDI beans injected into gRPC services, with the
+caller's Elytron identity automatically propagated from the HTTP request.
 
 == Issue Metadata
 
@@ -66,53 +67,126 @@ integration via a custom Undertow-to-Netty bridge
 
 == Requirements
 
-* *Servlet-based gRPC handler*: The gRPC subsystem registers a dedicated Undertow `DeploymentInfo` (servlet
-container) hosting the `io.grpc:grpc-servlet-jakarta` `ServletAdapter`. This container is separate from the servlet
-containers used by application deployments. An Undertow handler routes `application/grpc` requests to this
-dedicated container; all other traffic is unaffected.
+=== Per-WAR gRPC Servlet
 
-* *Threading model*: The gRPC servlet is registered with `asyncSupported=true`.
-The https://github.com/grpc/grpc-java/blob/b3838c0ce83152138aff3979c832225280d7a8d6/servlet/src/main/java/io/grpc/servlet/ServletAdapter.java#L127[`grpc-servlet-jakarta` `ServletAdapter`]
-immediately starts an `AsyncContext` on each incoming gRPC request, releasing the Undertow worker thread.
-gRPC message I/O is handled via non-blocking `ReadListener`/`WriteListener` callbacks.
-gRPC service method invocations are dispatched by grpc-core's internal executor (a cached thread pool),
-keeping them isolated from Undertow's I/O and worker thread pools.
-This design prevents long-lived streaming calls from starving standard HTTP traffic.
+Each WAR deployment that contains gRPC services (`BindableService` implementations) gets a `GrpcServlet` embedded
+directly into the WAR's servlet deployment by `GrpcServletInstallProcessor`. The gRPC servlet is created from
+`io.grpc:grpc-servlet-jakarta`'s `ServletServerBuilder` and mapped at `/grpc-dispatch/*` within the WAR.
 
-* *Port unification*: gRPC services are served on the existing Undertow HTTP/2 listeners (`:8080` / `:8443`).
+Because the gRPC servlet lives inside the WAR's own handler chain, WildFly's standard deployment pipeline runs for
+every gRPC request — including `ElytronContextAssociationHandler` for security, the WAR's filters, and any
+`application-security-domain` mappings.
+
+A single `UndertowFilter` registered by `GrpcUndertowService` on the configured virtual host intercepts incoming
+`application/grpc` requests and rewrites the request path to include the owning WAR's context path plus the
+`/grpc-dispatch` prefix, so Undertow's normal path-based routing delivers the request to the correct WAR's handler
+chain. Non-gRPC traffic is unaffected.
+
+=== Threading Model
+
+The `GrpcServlet` is registered with `asyncSupported=true`. The `grpc-servlet-jakarta` implementation immediately
+starts an `AsyncContext` on each incoming gRPC request, releasing the Undertow worker thread. gRPC message I/O is
+handled via non-blocking `ReadListener`/`WriteListener` callbacks. gRPC service method invocations are dispatched by
+grpc-core's internal executor (a cached thread pool), keeping them isolated from Undertow's I/O and worker thread
+pools. This design prevents long-lived streaming calls from starving standard HTTP traffic.
+
+=== Port Unification
+
+gRPC services are served on the existing Undertow HTTP/2 listeners (`:8080` / `:8443`).
 Port `:9555` is no longer opened.
 
-* *HTTP/2 prerequisite*: For cleartext gRPC (h2c), the Undertow `http-listener` must have `enable-http2="true"`.
+=== HTTP/2 Prerequisite
+
+For cleartext gRPC (h2c), the Undertow `http-listener` must have `enable-http2="true"`.
 The Galleon layer does **not** configure this automatically; operators must set it explicitly.
 For production use, it is recommended to use the HTTPS listener instead.
 
-* *Undertow integration*: The `/subsystem=grpc` resource exposes two new required attributes:
-  ** `server-name` — name of the Undertow server (e.g., `default-server`); capability reference to
-`org.wildfly.undertow.server`.
-  ** `virtual-host` — name of the Undertow virtual host (e.g., `default-host`); capability reference to
-`org.wildfly.undertow.server.host`.
+=== Undertow Integration
 
-* *Automatic service discovery*: Jandex scans during DEPLOY detect all classes extending `io.grpc.BindableService`
-and all `io.grpc.ServerInterceptor` implementations without manual registration.
+The `/subsystem=grpc` resource exposes the following attributes:
 
-* *CDI integration*: Discovered gRPC services and server interceptors are managed as `@ApplicationScoped` or `@Dependent` CDI beans, allowing full injection support.
+* `server-name` — name of the Undertow server (e.g., `default-server`); capability reference to
+  `org.wildfly.undertow.server`.
+* `virtual-host` — name of the Undertow virtual host (e.g., `default-host`); capability reference to
+  `org.wildfly.undertow.server.host`.
+* `max-inbound-message-size` — maximum size (in bytes) for inbound gRPC messages; passed to `ServletServerBuilder`.
+  Default: 4 MiB.
+* `max-inbound-metadata-size` — maximum size (in bytes) for inbound gRPC metadata/headers; passed to
+  `ServletServerBuilder`. Default: 8 KiB.
 
-* *Multiple deployments*: Multiple deployments exposing gRPC services are supported, as long as gRPC service names
-are unique across all active deployments.
+=== Automatic Service Discovery
 
-* *No TLS or Elytron configuration in the gRPC subsystem*: TLS is delegated to the Undertow HTTPS listener.
+Jandex scans during deployment detect all classes extending `io.grpc.BindableService` (leaf classes only) and all
+`io.grpc.ServerInterceptor` implementations without manual registration.
 
-* *Elytron `SecurityIdentity` propagation*: A built-in `ServerInterceptor` bridges Undertow's Elytron
-`SecurityIdentity` into the `io.grpc.Context` via a `Context.Key`, so gRPC services and CDI beans
-can access the caller's identity without relying on thread-local state.
+=== CDI Integration
 
-* *Standard gRPC streaming*: Unary, Server-streaming, Client-streaming, and Bidirectional streaming must work.
+Discovered gRPC services and server interceptors are instantiated as CDI beans when the deployment is a CDI
+deployment (beans.xml present), allowing full injection support. The `GrpcDeploymentService` MSC service depends on
+`WeldStartService` to ensure the CDI container is fully started before gRPC services are registered.
 
-* *Lifecycle*: gRPC services and interceptors are gracefully unregistered on undeployment or server reload.
+=== Multiple Deployments
+
+Multiple deployments exposing gRPC services are supported, as long as gRPC service names are unique across all
+active deployments. If a service name is already registered by another deployment, the conflicting deployment fails
+to start.
+
+=== No TLS Configuration in the gRPC Subsystem
+
+TLS is delegated entirely to the Undertow HTTPS listener. There is no TLS configuration surface in the `grpc`
+subsystem.
+
+=== Elytron SecurityIdentity Propagation
+
+Security is configured per-WAR using WildFly's standard Undertow security model — the WAR declares a security
+domain via `jboss-web.xml`, and a matching `application-security-domain` mapping is configured in the Undertow
+subsystem. No subsystem-level security attribute is needed.
+
+Two cooperating components bridge the identity from the Undertow request thread to the gRPC executor thread:
+
+1. **Inner handler chain wrapper** (`GrpcServletInstallProcessor`): Installed at the front of the WAR's inner handler
+   chain, this wrapper runs on the Undertow request thread inside the scope of `ElytronRunAsHandler`. It reads the
+   authenticated `SecurityIdentity` from `SecurityDomain.getCurrent()` and stores it in
+   `GrpcSecurity.AUTHENTICATED_IDENTITY_BY_REMOTE_ADDR` (a `ConcurrentHashMap` keyed by the client's remote
+   `InetSocketAddress`). A connection-close listener removes the entry when the TCP connection ends, ensuring
+   correctness under HTTP/2 multiplexing where multiple streams share the same connection and remote address.
+   For mTLS deployments, the wrapper falls back to explicit client certificate authentication via
+   `ServerAuthenticationContext.setAuthenticationPrincipal()` using the X.509 certificate from the TLS session.
+
+2. **`ElytronSecurityIdentityInterceptor`**: A built-in gRPC `ServerInterceptor` prepended to every service's
+   interceptor chain. It reads the identity from the map (or falls back to `SecurityDomain.getCurrent()`), sets
+   `GrpcSecurity.SECURITY_IDENTITY_KEY` on the gRPC `Context`, and wraps all listener callbacks with
+   `SecurityIdentity.runAs()` so that `SecurityDomain.getCurrent().getCurrentSecurityIdentity()` returns the identity
+   on gRPC executor threads. This enables:
+   * Service code to read the caller identity via `GrpcSecurity.SECURITY_IDENTITY_KEY.get()`
+   * Elytron thread-local identity via `SecurityDomain.getCurrent()`
+   * CDI `@RolesAllowed` interceptors to work transparently
+
+=== `@RolesAllowed` on CDI Beans
+
+The gRPC subsystem ships `GrpcSecurityCdiExtension`, a CDI Portable Extension that activates automatically for all
+CDI-enabled gRPC deployments. It:
+
+* Registers `GrpcRolesAllowedInterceptor` so CDI discovers it from the subsystem module
+* Adds `@GrpcSecuredBinding` to any CDI bean class whose methods carry `@RolesAllowed`
+* Vetoes WildFly's exchange-based `SecurityContext` bean and registers `GrpcElytronSecurityContext` instead, so that
+  role checks read from `SecurityDomain.getCurrent()` (populated by `runAs()` wrapping on gRPC executor threads)
+
+Application code only needs `@RolesAllowed` on CDI beans — no extra annotation or configuration is required.
+
+=== Standard gRPC Streaming
+
+Unary, Server-streaming, Client-streaming, and Bidirectional streaming must work.
+
+=== Lifecycle
+
+gRPC services and interceptors are registered via the `GrpcDeploymentService` MSC service and gracefully unregistered
+on undeployment or server reload. `GrpcDeploymentService.stop()` removes services from both the `MutableHandlerRegistry`
+(so the `GrpcServlet` stops routing to them) and the `WildFlyGrpcDeploymentRegistry` (so the `UndertowFilter` stops
+rewriting paths for them), and releases all CDI `CreationalContext` instances.
 
 === Non-Requirements
 
-* No Elytron-based per-method authorization policy in the gRPC subsystem; transport-level security is handled by the Undertow HTTPS listener.
 * No dedicated port or socket-binding configuration for gRPC.
 * No gRPC client stub injection.
 * No `protoc` invocation within the server.
@@ -120,7 +194,7 @@ can access the caller's identity without relying on thread-local state.
 
 === Future Work
 
-Promote stability from `experimental` to `preview` or `community` once the code and the management model is stabilized.
+Promote stability from `preview` to `community` once the code and the management model is stabilized.
 
 == Backwards Compatibility
 
@@ -137,15 +211,20 @@ The Galleon `grpc` layer is updated to:
 
 === Importing Existing Configuration
 
-The following `/subsystem=grpc` attributes are deprecated (no effect at runtime; deprecation warning logged at
-boot):
+The XML schema has been versioned: `urn:wildfly:grpc:preview:1.0` (Netty-based) is superseded by
+`urn:wildfly:grpc:preview:2.0` (servlet-based). The 1.0 parser rejects old configurations with an "unsupported
+namespace" error rather than silently misparsing them.
 
-* `port`, `flow-control-window`, `max-concurrent-calls-per-connection`, `max-inbound-message-size`,
-`max-inbound-metadata-size` — Netty-specific tuning, superseded by Undertow listener configuration.
+The following Netty-era attributes are removed (not present in 2.0 schema):
+
+* `port`, `flow-control-window`, `max-concurrent-calls-per-connection` — Netty-specific tuning.
 * `key-manager-name`, `trust-manager-name`, `ssl-context` — TLS is now the Undertow listener's responsibility.
 
-Users must also add `server-name` and `virtual-host` to the `/subsystem=grpc` resource, and remove the `:9555` socket
-binding. They must ensure that `enable-http2="true"` is set on the Undertow `http-listener`, or they setup an Undertow `https-listener`.
+The `max-inbound-message-size` and `max-inbound-metadata-size` attributes are retained with the same semantics.
+
+Users must update their configuration XML to the `urn:wildfly:grpc:preview:2.0` namespace and add the `server-name`
+and `virtual-host` attributes. They must also remove the `:9555` socket binding and ensure that
+`enable-http2="true"` is set on the Undertow `http-listener`, or they set up an Undertow `https-listener`.
 
 === Deployments
 
@@ -161,45 +240,55 @@ https://grpc.github.io/grpc/core/md_doc__p_r_o_t_o_c_o_l-_h_t_t_p2.html[gRPC HTT
 
 1. Remove server-side Netty modules and Netty server startup from the feature pack.
 2. Add `io.grpc:grpc-servlet-jakarta` as a Galleon module.
-3. At subsystem start, create a dedicated `DeploymentInfo` hosting the `ServletAdapter`, bound to the server and
-virtual host identified by `server-name` and `virtual-host`.
-4. Install an Undertow `HttpHandler` on the virtual host routing `application/grpc` traffic to the gRPC servlet
-container.
-5. Update deployment unit processing to scan for `BindableService` and `ServerInterceptor` implementations via
-Jandex and register them with the `ServletAdapter`.
-6. Add a built-in `ServerInterceptor` that reads Undertow's Elytron `SecurityIdentity` from the HTTP request and
-stores it in the `io.grpc.Context` via a `Context.Key`.
-7. Add `server-name` and `virtual-host` to the management model; mark Netty-specific attributes as deprecated.
-8. Update the Galleon layer (remove `:9555` binding, module changes).
-9. Update documentation and examples
+3. Add `GrpcServletInstallProcessor` deployment unit processor that embeds a `GrpcServlet` (from `ServletServerBuilder`)
+   into each WAR that contains gRPC services, mapped at `/grpc-dispatch/*`.
+4. Install an `UndertowFilter` on the configured virtual host (`GrpcUndertowService`) that intercepts
+   `application/grpc` requests and rewrites the path to route through the owning WAR's handler chain.
+5. Add `GrpcDeploymentService` MSC service that instantiates gRPC services (via CDI or reflection), registers them
+   with the `MutableHandlerRegistry`, and manages lifecycle (clean unregistration on stop).
+6. Add an inner handler chain wrapper in `GrpcServletInstallProcessor` that captures the Elytron `SecurityIdentity`
+   from the Undertow request thread and stores it in `GrpcSecurity.AUTHENTICATED_IDENTITY_BY_REMOTE_ADDR` for the
+   gRPC interceptor to read. Includes mTLS fallback via `ServerAuthenticationContext.setAuthenticationPrincipal()`.
+7. Add `ElytronSecurityIdentityInterceptor` that reads the identity from the map, sets it on the gRPC `Context`, and
+   wraps listener callbacks with `SecurityIdentity.runAs()`.
+8. Add `GrpcSecurityCdiExtension` portable extension enabling `@RolesAllowed` on CDI beans, with
+   `GrpcElytronSecurityContext` replacing WildFly's exchange-based `SecurityContext`.
+9. Add `server-name` and `virtual-host` to the management model; version the XML schema to 2.0.
+10. Update the Galleon layer (remove `:9555` binding, module changes).
+11. Update documentation and examples.
 
 == Admin Clients
 
-Deprecated attributes remain accessible via CLI and HAL so existing management scripts are not immediately broken.
-The two new required attributes (`server-name`, `virtual-host`) integrate with standard CLI and HAL without
-additional work.
+The two required attributes (`server-name`, `virtual-host`) and the retained optional attributes
+(`max-inbound-message-size`, `max-inbound-metadata-size`) integrate with standard CLI and HAL without additional work.
 
 == Security Considerations
 
 TLS is delegated entirely to the Undertow HTTPS listener; there is no separate TLS configuration surface in the
-`grpc` subsystem. The deprecated TLS attributes (`key-manager-name`, `trust-manager-name`, `ssl-context`) are
-ignored at runtime and have no effect on the server's security posture.
+`grpc` subsystem.
 
 The `grpc` Galleon layer does **not** enable cleartext HTTP/2 by default.
 Operators who require cleartext gRPC (h2c) must explicitly set `enable-http2="true"` on the Undertow `http-listener`.
 For production deployments, configuring an Undertow HTTPS listener is strongly recommended.
 
-Undertow's Elytron `SecurityIdentity` (established at the transport layer via client certificates or token-based
-authentication) is propagated into the `io.grpc.Context` by a built-in `ServerInterceptor`, making the caller's
-identity available to gRPC service implementations and CDI beans without relying on thread-local state.
-Elytron-based per-method authorization policy is not in scope for this iteration.
+Security is configured per-WAR using WildFly's standard Undertow security model (`jboss-web.xml` +
+`application-security-domain`). The Elytron `SecurityIdentity` is propagated from the Undertow handler chain to the
+gRPC executor thread via a two-component bridge: an inner handler chain wrapper captures the identity on the request
+thread, and the built-in `ElytronSecurityIdentityInterceptor` makes it available to service code via both the gRPC
+`Context.Key` and Elytron's thread-local (through `SecurityIdentity.runAs()` wrapping).
+
+`@RolesAllowed` is supported on CDI beans injected into gRPC services via the `GrpcSecurityCdiExtension` portable
+extension, which transparently adds interceptor bindings and provides a gRPC-compatible `SecurityContext` implementation.
+
+For mutual TLS, the inner handler chain wrapper authenticates the client certificate's `X500Principal` directly via
+`ServerAuthenticationContext.setAuthenticationPrincipal()`. The `CLIENT_CERT` HTTP authentication mechanism is
+intentionally not used because Elytron's filesystem-realm cannot verify `X509PeerCertificateChainEvidence`, which
+would cause a 403 Forbidden before the request reaches the `GrpcServlet`.
 
 [[test_plan]]
 == Test Plan
 
-At the `experimental` stability level, basic unit and integration tests are provided.
-
-Unit tests verify management model parsing (including deprecated attributes), deprecation warning emission, and
+Unit tests verify management model parsing, schema version handling (1.0 rejection, 2.0 parsing), and
 capability reference validation for `server-name` and `virtual-host`.
 
 Integration tests (Arquillian) verify:
@@ -211,16 +300,28 @@ Integration tests (Arquillian) verify:
 * Deploy/undeploy lifecycle: services and interceptors are correctly unregistered without affecting other deployments.
 * Standard HTTP/REST traffic on `:8080` is unaffected by the gRPC handler installation.
 * TLS gRPC on `:8443` when TLS is configured on the Undertow `https-listener`.
+* Mutual TLS (two-way TLS) with client certificate authentication and identity propagation.
+* Elytron `SecurityIdentity` propagation: authenticated user identity is accessible via
+  `GrpcSecurity.SECURITY_IDENTITY_KEY` and `SecurityDomain.getCurrent()`.
+* Unauthenticated calls return anonymous identity when security domain is configured.
+* `@RolesAllowed` enforcement on CDI beans: authorized users pass, unauthorized users receive `PERMISSION_DENIED`.
+* mTLS without Elytron configuration returns anonymous identity (negative test).
 
 == Community Documentation
 
 The feature pack README is updated with a migration guide: update client port (`:9555` → `:8080` / `:8443`), enable
-HTTP/2 on the Undertow `http-listener`, add `server-name` and `virtual-host` to the subsystem resource, and remove
-the `:9555` socket binding. The examples are updated to demonstrate the Servlet-based approach.
+HTTP/2 on the Undertow `http-listener`, update the XML namespace to `urn:wildfly:grpc:preview:2.0`, add `server-name`
+and `virtual-host` to the subsystem resource, and remove the `:9555` socket binding. The examples are updated to
+demonstrate the Servlet-based approach.
+
+A `doc/security.md` document describes the security architecture, including per-WAR configuration, identity
+propagation flow, `@RolesAllowed` setup, and mutual TLS configuration.
 
 == Release Note Content
 
 The https://github.com/wildfly-extras/wildfly-grpc-feature-pack[WildFly gRPC feature pack] now serves gRPC over the standard Undertow HTTP/2 listeners (`:8080` / `:8443`),
-replacing the standalone Netty server on port `:9555`. TLS is handled by the Undertow HTTPS listener. To migrate,
-update gRPC clients to connect to `:8080` (cleartext) or `:8443` (TLS) and ensure `enable-http2="true"` is set on
-the Undertow `http-listener`, or configure an Undertow `https-listener`.
+replacing the standalone Netty server on port `:9555`. TLS is handled by the Undertow HTTPS listener. Elytron
+`SecurityIdentity` is propagated to gRPC services via the WAR's standard security configuration, and `@RolesAllowed`
+is supported on CDI beans injected into gRPC services. To migrate, update gRPC clients to connect to `:8080`
+(cleartext) or `:8443` (TLS), update the XML namespace to `urn:wildfly:grpc:preview:2.0`, and ensure
+`enable-http2="true"` is set on the Undertow `http-listener`, or configure an Undertow `https-listener`.
